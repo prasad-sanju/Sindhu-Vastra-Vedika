@@ -1,0 +1,55 @@
+terraform {
+  required_version = ">= 1.9.0"
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 5.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.7"
+    }
+  }
+}
+
+provider "azurerm" {
+  features {}
+}
+
+provider "random" {}
+
+variable "location" {
+  type    = string
+  default = "Central India"
+}
+
+resource "azurerm_resource_group" "state" {
+  name     = "svv-tfstate-rg"
+  location = var.location
+}
+
+resource "random_string" "suffix" {
+  length  = 8
+  special = false
+  upper   = false
+}
+
+resource "azurerm_storage_account" "state" {
+  name                            = "svvtfstate${random_string.suffix.result}"
+  resource_group_name             = azurerm_resource_group.state.name
+  location                        = azurerm_resource_group.state.location
+  account_tier                    = "Standard"
+  account_replication_type        = "LRS"
+  min_tls_version                 = "TLS1_2"
+  allow_nested_items_to_be_public = false
+}
+
+resource "azurerm_storage_container" "state" {
+  name                  = "tfstate"
+  storage_account_id    = azurerm_storage_account.state.id
+  container_access_type = "private"
+}
+
+output "storage_account_name" {
+  value = azurerm_storage_account.state.name
+}

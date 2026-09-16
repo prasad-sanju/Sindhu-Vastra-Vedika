@@ -1,0 +1,6 @@
+location = "Central India"
+resource_group_name = "svv-dev-rg"
+vnet_name = "svv-dev-vnet"
+aks_name = "svv-dev-aks"
+acr_name = "REPLACE_WITH_GLOBALLY_UNIQUE_ACR_NAME"
+key_vault_name = "REPLACE_WITH_GLOBALLY_UNIQUE_KEYVAULT_NAME"

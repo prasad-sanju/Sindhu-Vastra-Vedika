@@ -1,0 +1,129 @@
+trigger:
+  branches:
+    include: [ main ]
+
+pr:
+  branches:
+    include: [ main ]
+
+variables:
+  azureServiceConnection: 'SVV-Azure-Service-Connection'
+  acrServiceConnection: 'SVV-ACR-Service-Connection'
+  resourceGroup: 'svv-dev-rg'
+  aksCluster: 'svv-dev-aks'
+  acrName: 'REPLACE_WITH_YOUR_ACR_NAME'
+  imageRepository: 'sindhu-vastra-vedika'
+  imageTag: '$(Build.BuildId)'
+  kubernetesNamespace: 'svv-dev'
+  terraformVersion: '1.9.8'
+  terraformDirectory: '$(Build.SourcesDirectory)/terraform'
+  tfStateResourceGroup: 'svv-dev-rg'
+  tfStateContainer: 'tfstate'
+  tfStateKey: 'svv-dev.tfstate'
+
+stages:
+- stage: CI
+  displayName: 'CI - Python Build and Test'
+  jobs:
+  - job: Python
+    pool: { vmImage: ubuntu-latest }
+    steps:
+    - checkout: self
+    - task: UsePythonVersion@0
+      inputs: { versionSpec: '3.12' }
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+      displayName: 'Install dependencies'
+    - script: pytest -q
+      displayName: 'Run tests'
+    - script: python -m compileall app run.py seed.py
+      displayName: 'Validate Python syntax'
+
+- stage: Terraform
+  displayName: 'Terraform - Provision Azure'
+  dependsOn: CI
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - job: TerraformApply
+    pool: { vmImage: ubuntu-latest }
+    steps:
+    - checkout: self
+    - task: TerraformInstaller@1
+      inputs: { terraformVersion: '$(terraformVersion)' }
+    - task: AzureCLI@2
+      displayName: 'Terraform Init Plan Apply'
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+          cd "$(terraformDirectory)"
+          export ARM_USE_CLI=true
+          export ARM_USE_AZUREAD=true
+          terraform init \
+            -backend-config="resource_group_name=$(tfStateResourceGroup)" \
+            -backend-config="storage_account_name=$(TF_STATE_STORAGE_ACCOUNT)" \
+            -backend-config="container_name=$(tfStateContainer)" \
+            -backend-config="key=$(tfStateKey)" \
+            -backend-config="use_azuread_auth=true"
+          terraform fmt -check
+          terraform validate
+          terraform plan -out=tfplan -input=false
+          terraform apply -auto-approve -input=false tfplan
+          terraform output
+
+- stage: Docker
+  displayName: 'Docker - Build and Push to ACR'
+  dependsOn: Terraform
+  condition: succeeded()
+  jobs:
+  - job: BuildPush
+    pool: { vmImage: ubuntu-latest }
+    steps:
+    - checkout: self
+    - task: Docker@2
+      displayName: 'Build and Push to ACR'
+      inputs:
+        containerRegistry: '$(acrServiceConnection)'
+        repository: '$(imageRepository)'
+        command: buildAndPush
+        Dockerfile: '$(Build.SourcesDirectory)/Dockerfile'
+        buildContext: '$(Build.SourcesDirectory)'
+        tags: |
+          $(imageTag)
+
+- stage: Deploy
+  displayName: 'CD - Deploy to AKS'
+  dependsOn: Docker
+  condition: succeeded()
+  jobs:
+  - deployment: AKS
+    displayName: 'Deploy Sindhu Vastra Vedika'
+    pool: { vmImage: ubuntu-latest }
+    environment: 'SVV-DEV'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - task: AzureCLI@2
+            displayName: 'Deploy Kubernetes manifests'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az aks get-credentials --resource-group "$(resourceGroup)" --name "$(aksCluster)" --overwrite-existing
+                IMAGE="$(acrName).azurecr.io/$(imageRepository):$(imageTag)"
+                sed -i "s|IMAGE_PLACEHOLDER|$IMAGE|g" k8s/deployment.yaml
+                kubectl apply -f k8s/namespace.yaml
+                kubectl apply -f k8s/configmap.yaml
+                kubectl apply -f k8s/deployment.yaml
+                kubectl apply -f k8s/service.yaml
+                kubectl apply -f k8s/pdb.yaml
+                kubectl rollout status deployment/svv-web -n "$(kubernetesNamespace)" --timeout=180s
+                kubectl get pods -n "$(kubernetesNamespace)" -o wide
+                kubectl get svc svv-service -n "$(kubernetesNamespace)"

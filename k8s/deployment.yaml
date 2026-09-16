@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: svv-web
+  namespace: svv-dev
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels: { app: svv-web }
+  template:
+    metadata:
+      labels: { app: svv-web }
+    spec:
+      containers:
+      - name: svv-web
+        image: IMAGE_PLACEHOLDER
+        ports: [{ containerPort: 5000, name: http }]
+        envFrom: [{ configMapRef: { name: svv-config } }]
+        resources:
+          requests: { cpu: 100m, memory: 128Mi }
+          limits: { cpu: 500m, memory: 512Mi }
+        readinessProbe:
+          httpGet: { path: /health, port: 5000 }
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: { path: /health, port: 5000 }
+          initialDelaySeconds: 30
+          periodSeconds: 20
+        securityContext:
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          capabilities: { drop: ["ALL"] }

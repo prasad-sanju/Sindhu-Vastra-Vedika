@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: svv-config
+  namespace: svv-dev
+data:
+  FLASK_ENV: production
